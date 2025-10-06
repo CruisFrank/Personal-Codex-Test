@@ -1,0 +1,524 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>跳一跳：闯关挑战</title>
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      font-family: "Segoe UI", "PingFang SC", sans-serif;
+      background: radial-gradient(circle at top, #111927 0%, #05090f 50%, #010203 100%);
+      color: #f1f5f9;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: flex-start;
+      min-height: 100vh;
+    }
+
+    h1 {
+      margin: 24px 0 8px;
+      font-weight: 700;
+      letter-spacing: 2px;
+    }
+
+    .hud {
+      display: flex;
+      gap: 16px;
+      margin-bottom: 12px;
+      font-size: 18px;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+
+    .hud span {
+      padding: 6px 12px;
+      border-radius: 8px;
+      background: rgba(15, 23, 42, 0.6);
+      backdrop-filter: blur(6px);
+      box-shadow: 0 0 12px rgba(15, 23, 42, 0.6);
+    }
+
+    canvas {
+      border-radius: 18px;
+      background: linear-gradient(180deg, #101629 0%, #0d1220 60%, #060910 100%);
+      box-shadow: 0 16px 40px rgba(0, 0, 0, 0.6);
+      cursor: pointer;
+    }
+
+    .hint {
+      margin-top: 12px;
+      font-size: 15px;
+      opacity: 0.85;
+      text-align: center;
+      max-width: 520px;
+      line-height: 1.5;
+    }
+
+    button {
+      margin-top: 16px;
+      padding: 10px 24px;
+      border: none;
+      border-radius: 999px;
+      background: linear-gradient(135deg, #38bdf8, #6366f1);
+      color: #fff;
+      font-size: 16px;
+      cursor: pointer;
+      transition: transform 0.2s ease, box-shadow 0.2s ease;
+      box-shadow: 0 10px 24px rgba(99, 102, 241, 0.4);
+    }
+
+    button:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 16px 30px rgba(56, 189, 248, 0.5);
+    }
+
+    button:active {
+      transform: translateY(1px);
+    }
+  </style>
+</head>
+<body>
+  <h1>跳一跳：复杂闯关挑战</h1>
+  <div class="hud">
+    <span id="score">得分：0</span>
+    <span id="level">关卡：1</span>
+    <span id="combo">连击：0</span>
+    <span id="progress">距离下一关：120</span>
+    <span id="best">历史最高：0 / 0</span>
+  </div>
+  <canvas id="game" width="540" height="720"></canvas>
+  <p class="hint">
+    按住鼠标或触屏蓄力，松开即可跳跃。精准落在平台中心可获得连击加成。
+    每一关的平台间距、大小和移动方式都会发生变化，挑战你的极限吧！
+  </p>
+  <button id="restart" hidden>重新挑战</button>
+
+  <script>
+    const canvas = document.getElementById('game');
+    const ctx = canvas.getContext('2d');
+
+    const scoreEl = document.getElementById('score');
+    const levelEl = document.getElementById('level');
+    const comboEl = document.getElementById('combo');
+    const restartBtn = document.getElementById('restart');
+    const progressEl = document.getElementById('progress');
+    const bestEl = document.getElementById('best');
+
+    const WIDTH = canvas.width;
+    const HEIGHT = canvas.height;
+
+    const GRAVITY = 0.8;
+    const CHARGE_RATE = 0.11;
+    const MAX_CHARGE = 1.4;
+
+    const COLORS = ['#38bdf8', '#a855f7', '#f97316', '#22d3ee', '#facc15'];
+
+    const LEVEL_CONFIG = [
+      { distance: [120, 180], platformWidth: [100, 120], wobble: 0 },
+      { distance: [150, 210], platformWidth: [90, 110], wobble: 0.5 },
+      { distance: [180, 260], platformWidth: [80, 100], wobble: 1.2 },
+      { distance: [220, 300], platformWidth: [70, 90], wobble: 1.8 },
+      { distance: [260, 340], platformWidth: [60, 80], wobble: 2.5 }
+    ];
+
+    let player;
+    let platforms;
+    let score;
+    let level;
+    let combo;
+    let charging;
+    let chargePower;
+    let gameOver;
+    let bestScore = 0;
+    let bestComboRecord = 0;
+    const floatingTexts = [];
+
+    function resetGame() {
+      level = 1;
+      score = 0;
+      combo = 0;
+      charging = false;
+      chargePower = 0;
+      gameOver = false;
+      overlayMessage = '';
+      overlaySubMessage = '';
+
+      player = {
+        x: WIDTH / 4,
+        y: HEIGHT - 160,
+        radius: 18,
+        vx: 0,
+        vy: 0,
+        onGround: true
+      };
+
+      platforms = [];
+      const startPlatform = createPlatform(WIDTH / 4 - 70, HEIGHT - 120, 120);
+      platforms.push(startPlatform);
+      addNextPlatform();
+      addNextPlatform();
+
+      restartBtn.hidden = true;
+      updateHUD();
+      loop();
+    }
+
+    function createPlatform(x, y, width) {
+      return {
+        x,
+        y,
+        width,
+        height: 12,
+        color: COLORS[Math.floor(Math.random() * COLORS.length)],
+        targetX: x,
+        time: Math.random() * Math.PI * 2,
+        speed: 0
+      };
+    }
+
+    function addNextPlatform() {
+      const config = LEVEL_CONFIG[Math.min(level - 1, LEVEL_CONFIG.length - 1)];
+      const prev = platforms[platforms.length - 1];
+      const distance = randomInRange(config.distance);
+      const width = randomInRange(config.platformWidth);
+      const offsetY = randomInRange([-40, 40]);
+      const platform = createPlatform(
+        prev.x + distance,
+        clamp(prev.y + offsetY, HEIGHT - 300, HEIGHT - 120),
+        width
+      );
+
+      if (config.wobble > 0) {
+        platform.speed = config.wobble * 0.015 + Math.random() * 0.01;
+        platform.targetX = platform.x + Math.sin(platform.time) * 40;
+      }
+
+      platforms.push(platform);
+    }
+
+    function updatePlatforms(delta) {
+      const config = LEVEL_CONFIG[Math.min(level - 1, LEVEL_CONFIG.length - 1)];
+      platforms.forEach((platform, index) => {
+        if (config.wobble > 0 && index > 0) {
+          platform.time += platform.speed * delta;
+          platform.x += Math.sin(platform.time) * config.wobble;
+        }
+      });
+
+      if (platforms[0].x + platforms[0].width < -200) {
+        platforms.shift();
+      }
+
+      let last = platforms[platforms.length - 1];
+      while (last.x < WIDTH + 200) {
+        addNextPlatform();
+        last = platforms[platforms.length - 1];
+      }
+    }
+
+    function updateHUD() {
+      scoreEl.textContent = `得分：${score}`;
+      levelEl.textContent = `关卡：${level}`;
+      comboEl.textContent = `连击：${combo}`;
+      const nextThreshold = level * 120;
+      if (level >= LEVEL_CONFIG.length) {
+        progressEl.textContent = '终极关卡：保持节奏刷新高分！';
+      } else {
+        progressEl.textContent = `距离下一关：${Math.max(0, Math.ceil(nextThreshold - score))}`;
+      }
+      bestEl.textContent = `历史最高：${bestScore} / ${bestComboRecord}`;
+    }
+
+    function randomInRange(range) {
+      const [min, max] = range;
+      return Math.random() * (max - min) + min;
+    }
+
+    function clamp(value, min, max) {
+      return Math.max(min, Math.min(value, max));
+    }
+
+    let lastTime = 0;
+    let overlayMessage = '';
+    let overlaySubMessage = '';
+    function loop(timestamp = 0) {
+      const delta = Math.min(32, timestamp - lastTime || 16);
+      lastTime = timestamp;
+
+      ctx.clearRect(0, 0, WIDTH, HEIGHT);
+
+      if (!gameOver) {
+        updatePlatforms(delta);
+        updatePlayer();
+      }
+
+      // Draw platforms
+      platforms.forEach(platform => {
+        drawPlatform(platform);
+      });
+
+      drawPlayer();
+      drawChargeBar();
+
+      if (gameOver) {
+        drawGameOverOverlay();
+      }
+
+      drawFloatingTexts();
+
+      requestAnimationFrame(loop);
+    }
+
+    function drawPlatform(platform) {
+      const { x, y, width, height, color } = platform;
+      const gradient = ctx.createLinearGradient(x, y, x, y + height);
+      gradient.addColorStop(0, color);
+      gradient.addColorStop(1, '#0f172a');
+      ctx.fillStyle = gradient;
+      ctx.fillRect(x, y, width, height);
+
+      ctx.fillStyle = 'rgba(15, 23, 42, 0.4)';
+      ctx.fillRect(x, y + height, width, 4);
+    }
+
+    function updatePlayer() {
+      if (charging && player.onGround) {
+        chargePower = Math.min(MAX_CHARGE, chargePower + CHARGE_RATE);
+      }
+
+      player.vy += GRAVITY;
+      player.x += player.vx;
+      player.y += player.vy;
+
+      if (player.x > WIDTH * 0.6) {
+        const shift = player.x - WIDTH * 0.6;
+        player.x -= shift;
+        platforms.forEach(platform => {
+          platform.x -= shift;
+        });
+        floatingTexts.forEach(text => {
+          text.x -= shift;
+        });
+      } else if (player.x < WIDTH * 0.25) {
+        const shift = WIDTH * 0.25 - player.x;
+        player.x += shift;
+        platforms.forEach(platform => {
+          platform.x += shift;
+        });
+        floatingTexts.forEach(text => {
+          text.x += shift;
+        });
+      }
+
+      // Collision detection
+      player.onGround = false;
+      for (const platform of platforms) {
+        if (
+          player.y + player.radius > platform.y &&
+          player.y + player.radius < platform.y + platform.height + Math.abs(player.vy) &&
+          player.x > platform.x &&
+          player.x < platform.x + platform.width &&
+          player.vy >= 0
+        ) {
+          player.y = platform.y - player.radius;
+          player.vy = 0;
+          player.vx = 0;
+          player.onGround = true;
+          handleLanding(platform);
+          break;
+        }
+      }
+
+      if (player.y - player.radius > HEIGHT + 100) {
+        triggerGameOver();
+      }
+    }
+
+    function drawPlayer() {
+      const gradient = ctx.createRadialGradient(
+        player.x - player.radius / 2,
+        player.y - player.radius / 2,
+        player.radius / 3,
+        player.x,
+        player.y,
+        player.radius
+      );
+      gradient.addColorStop(0, '#f8fafc');
+      gradient.addColorStop(1, '#38bdf8');
+
+      ctx.beginPath();
+      ctx.fillStyle = gradient;
+      ctx.arc(player.x, player.y, player.radius, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.closePath();
+    }
+
+    function drawChargeBar() {
+      if (!player.onGround || gameOver) return;
+      const width = 160;
+      const height = 16;
+      const x = player.x - width / 2;
+      const y = player.y + player.radius + 24;
+
+      ctx.fillStyle = 'rgba(15, 23, 42, 0.45)';
+      ctx.fillRect(x, y, width, height);
+
+      const filled = width * (chargePower / MAX_CHARGE);
+      const barGradient = ctx.createLinearGradient(x, y, x + width, y);
+      barGradient.addColorStop(0, '#38bdf8');
+      barGradient.addColorStop(1, '#a855f7');
+      ctx.fillStyle = barGradient;
+      ctx.fillRect(x, y, filled, height);
+
+      ctx.strokeStyle = 'rgba(148, 163, 184, 0.8)';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(x, y, width, height);
+    }
+
+    function handleLanding(platform) {
+      const center = platform.x + platform.width / 2;
+      const distanceFromCenter = Math.abs(player.x - center);
+      const precision = distanceFromCenter / (platform.width / 2);
+
+      const previousBestScore = bestScore;
+      const previousBestCombo = bestComboRecord;
+      let gained = 10;
+      if (precision < 0.2) {
+        combo++;
+        gained += combo * 5;
+        floatingText(`精准连击 x${combo}!`, center, platform.y - 30, '#facc15');
+      } else {
+        combo = 0;
+        floatingText('稳稳落地', player.x, platform.y - 24, '#38bdf8');
+      }
+
+      score += Math.round(gained);
+
+      if (score > bestScore) {
+        bestScore = score;
+        if (score > previousBestScore) {
+          floatingText('刷新最高分！', center, platform.y - 80, '#38bdf8');
+        }
+      }
+      if (combo > bestComboRecord) {
+        bestComboRecord = combo;
+        if (combo > previousBestCombo) {
+          floatingText('连击纪录提升！', center + 10, platform.y - 54, '#a855f7');
+        }
+      }
+
+      if (score >= level * 120 && level < LEVEL_CONFIG.length) {
+        level++;
+        floatingText(`进入第 ${level} 关！`, platform.x + platform.width / 2, platform.y - 60, '#facc15');
+      }
+
+      updateHUD();
+    }
+
+    function floatingText(text, x, y, color = '#38bdf8') {
+      floatingTexts.push({ text, x, y, opacity: 1, color });
+    }
+
+    function drawFloatingTexts() {
+      for (let i = floatingTexts.length - 1; i >= 0; i--) {
+        const ft = floatingTexts[i];
+        ft.y -= 0.6;
+        ft.opacity -= 0.015;
+        if (ft.opacity <= 0) {
+          floatingTexts.splice(i, 1);
+          continue;
+        }
+        ctx.globalAlpha = ft.opacity;
+        ctx.fillStyle = ft.color;
+        ctx.font = '18px "Segoe UI", "PingFang SC"';
+        ctx.textAlign = 'center';
+        ctx.fillText(ft.text, ft.x, ft.y);
+        ctx.globalAlpha = 1;
+      }
+    }
+
+    function drawGameOverOverlay() {
+      ctx.fillStyle = 'rgba(15, 23, 42, 0.75)';
+      ctx.fillRect(0, 0, WIDTH, HEIGHT);
+
+      ctx.fillStyle = '#f8fafc';
+      ctx.font = '28px "Segoe UI", "PingFang SC"';
+      ctx.textAlign = 'center';
+      ctx.fillText('挑战结束', WIDTH / 2, HEIGHT / 2 - 40);
+
+      ctx.font = '22px "Segoe UI", "PingFang SC"';
+      ctx.fillText(overlayMessage, WIDTH / 2, HEIGHT / 2 + 4);
+      ctx.fillText(overlaySubMessage, WIDTH / 2, HEIGHT / 2 + 44);
+      ctx.font = '18px "Segoe UI", "PingFang SC"';
+      ctx.fillText('点击下方按钮继续闯关', WIDTH / 2, HEIGHT / 2 + 78);
+    }
+
+    function triggerGameOver() {
+      if (gameOver) return;
+      gameOver = true;
+      restartBtn.hidden = false;
+      bestScore = Math.max(bestScore, score);
+      bestComboRecord = Math.max(bestComboRecord, combo);
+      overlayMessage = `最终得分：${score}，最高连击：${combo}`;
+      overlaySubMessage = `历史最佳：${bestScore} 分 / ${bestComboRecord} 连击`;
+      floatingText('再接再厉！', player.x, player.y - 40, '#f97316');
+      updateHUD();
+    }
+
+    function startCharge() {
+      if (gameOver || !player.onGround) return;
+      charging = true;
+      chargePower = 0;
+    }
+
+    function releaseCharge() {
+      if (gameOver || !charging) return;
+      charging = false;
+
+      const angle = Math.PI / 4 + Math.random() * 0.2 - 0.1;
+      const power = 12 * chargePower;
+      player.vx = Math.cos(angle) * power + 2;
+      player.vy = -Math.sin(angle) * power - 8;
+      player.onGround = false;
+
+      floatingText('跳！', player.x, player.y - 40);
+    }
+
+    canvas.addEventListener('mousedown', startCharge);
+    canvas.addEventListener('touchstart', (e) => {
+      e.preventDefault();
+      startCharge();
+    }, { passive: false });
+
+    window.addEventListener('mouseup', releaseCharge);
+    window.addEventListener('touchend', (e) => {
+      e.preventDefault();
+      releaseCharge();
+    }, { passive: false });
+
+    let spacePressed = false;
+    window.addEventListener('keydown', (e) => {
+      if (e.code === 'Space' && !spacePressed) {
+        spacePressed = true;
+        startCharge();
+      }
+    });
+
+    window.addEventListener('keyup', (e) => {
+      if (e.code === 'Space') {
+        spacePressed = false;
+        releaseCharge();
+      }
+    });
+
+    restartBtn.addEventListener('click', resetGame);
+
+    resetGame();
+  </script>
+</body>
+</html>
