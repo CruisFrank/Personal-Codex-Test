@@ -3,3 +3,4 @@ __pycache__/
 /dist/
 /build/
 *.spec
+!packaging/win/circuit_designer.spec
