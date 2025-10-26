@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+/dist/
+/build/
+*.spec
+!packaging/win/circuit_designer.spec
